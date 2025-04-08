@@ -28,6 +28,9 @@ import shutil
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # print(device)
 
+# EXAone 토큰화 모델 로드
+tokenizer = AutoTokenizer.from_pretrained("LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct", trust_remote_code=True)
+
 # 하이퍼파라미터 설정
 batch_size = 32
 num_epochs = 100
@@ -39,8 +42,8 @@ max_length = 360
 file_path = '../dataset/Interactive_Dataset/Interactive_VP_Dataset_exaone_360_v3.csv'
 token_weights_dict = torch.load('../token_weight/token_weights_exaone.pt', weights_only=True)
 
-# EXAone 토큰화 모델 로드
-tokenizer = AutoTokenizer.from_pretrained("LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct", trust_remote_code=True)
+#그래프 저장 "SAVE", "SHOW"
+MODE = "SAVE"
 
 # 데이터셋 클래스 정의 (각 단어 가중치 추가)
 class VoicePhishingDataset(Dataset):
@@ -145,8 +148,49 @@ def visualize_token_weights(sample, tokenizer, verbose=False):
     for i, (tok, w) in enumerate(zip(tokens, weight_values)):
         print(f"{i:<5} {tok:<20} {w:<6.4f}")
 
+#loss, accuracy 그래프 함수
+def plot_metrics_from_lists(fold,train_metrics, val_metrics, save_path=f'../Result/TextCNN_v1'):
+    epochs = range(1, len(train_metrics) + 1)
+
+    train_loss = [m['avg_loss'] for m in train_metrics]
+    val_loss = [m['avg_loss'] for m in val_metrics]
+    train_acc = [m['accuracy'] for m in train_metrics]
+    val_acc = [m['accuracy'] for m in val_metrics]
+
+    # Loss
+    plt.figure()
+    plt.plot(epochs, train_loss, label='Train Loss')
+    plt.plot(epochs, val_loss, label='Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Loss over Epochs')
+    plt.legend()
+
+    os.makedirs(f"{save_path}/Loss_plot", exist_ok=True)
+    if MODE == "SAVE":
+        plt.savefig(os.path.join(save_path, f'Loss_plot/loss_curve_fold_{fold}.png'))
+    elif MODE == "SHOW":
+        plt.show()
+    plt.close()
+
+    # Accuracy
+    plt.figure()
+    plt.plot(epochs, train_acc, label='Train Accuracy')
+    plt.plot(epochs, val_acc, label='Validation Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title('Accuracy over Epochs')
+    plt.legend()
+
+    os.makedirs(f"{save_path}/Accuracy_Plot", exist_ok=True)
+    if MODE == "SAVE":
+        plt.savefig(os.path.join(save_path, f'Accuracy_Plot/accuracy_curve_fold_{fold}.png'))
+    elif MODE == "SHOW":
+        plt.show()
+    plt.close()
+
 # ROC curve plotting 함수
-def plot_roc_curve(fold, all_labels, all_probs, save_dir='../Result/ROCAUC/exaone_TextCNN_v1',MODE = "SAVE"):
+def plot_roc_curve(fold, all_labels, all_probs, save_dir='../Result/TextCNN_v1/ROCAUC'):
     fpr, tpr, _ = roc_curve(all_labels, all_probs)
     auc = roc_auc_score(all_labels, all_probs)
     plt.figure()
@@ -214,39 +258,65 @@ def compute_metrics(total_loss, all_preds, all_labels, all_probs):
         'all_probs': all_probs
     }
 
-# 평가 결과 출력 + 케이스별 저장
-def report_evaluation(fold, metrics, dataset=None, val_idx=None):
-    print(f"Fold {fold} Evaluation Report:")
+# 평가 결과를 텍스트로 출력하는 함수
+def print_evaluation_summary(fold, metrics):
+    print(f"\nFold {fold} Evaluation Report:")
     print(classification_report(metrics['all_labels'], metrics['all_preds'], digits=4))
     print(f"Accuracy: {metrics['accuracy']:.4f}, ROC AUC: {metrics['roc_auc']:.4f}")
     print(f"True Positive Rate: {metrics['true_acc']:.4f}")
     print(f"True Negative Rate: {metrics['false_acc']:.4f}\n")
 
-    plot_roc_curve(fold, metrics['all_labels'], metrics['all_probs'], MODE ="SAVE")
+# 예측값과 정답값을 비교하여 케이스(TP, FP, FN, TN) 라벨을 생성하는 함수
+def classify_cases(true_labels, pred_labels):
+    new_labels = np.zeros_like(true_labels)
+    new_labels[(true_labels == 1) & (pred_labels == 1)] = 1  # TP
+    new_labels[(true_labels == 0) & (pred_labels == 1)] = 2  # FP
+    new_labels[(true_labels == 1) & (pred_labels == 0)] = 3  # FN
+    new_labels[(true_labels == 0) & (pred_labels == 0)] = 4  # TN
+    return new_labels
 
-    # 케이스 라벨링 및 저장
+# 케이스별 샘플을 저장하고, 전부 비어 있을 경우 전체 데이터와 진단 정보를 저장하는 함수
+def save_case_samples(fold, val_data, case_dir, metrics):
+    case_map = {1: 'TP', 2: 'FP', 3: 'FN', 4: 'TN'}
+    all_case_empty = True
+
+    for code, case_word in case_map.items():
+        case_df = val_data[val_data['case'] == code]
+        if not case_df.empty:
+            all_case_empty = False
+            case_path = os.path.join(case_dir, f'case_{case_word}.csv')
+            case_df.to_csv(case_path, index=False, encoding='utf-8')
+            print(f"Case {case_word} 샘플 {len(case_df)}개 저장 완료: {case_path}")
+        else:
+            print(f"Case {case_word} 샘플 없음: 저장 생략")
+
+    if all_case_empty:
+        print(f"\n[경고] Fold {fold}: 모든 케이스가 0개입니다. 데이터셋 자체에 문제가 있을 수 있습니다.")
+        print(f"정답값 분포: {np.bincount(metrics['all_labels']) if len(metrics['all_labels']) > 0 else '없음'}")
+        print(f"예측값 분포: {np.bincount(metrics['all_preds']) if len(metrics['all_preds']) > 0 else '없음'}")
+        print(f"ROC AUC: {metrics['roc_auc']:.4f}")
+        full_save_path = os.path.join(case_dir, f'fold_{fold}_all_cases_empty.csv')
+        val_data.to_csv(full_save_path, index=False, encoding='utf-8')
+        print(f"전체 검증 데이터셋 저장 완료: {full_save_path}")
+
+# 모델 평가 결과 출력 및 케이스별 검증 샘플 저장
+def report_evaluation(fold, metrics, dataset=None, val_idx=None):
+    print_evaluation_summary(fold, metrics)  # 평가 결과 출력
+    plot_roc_curve(fold, metrics['all_labels'], metrics['all_probs'])  # ROC 곡선 저장
+
     if dataset is not None and val_idx is not None:
         true_labels = np.array(metrics['all_labels'])
         pred_labels = np.array(metrics['all_preds'])
-        new_labels = np.zeros_like(true_labels)
-
-        new_labels[(true_labels == 1) & (pred_labels == 1)] = 1  # TP
-        new_labels[(true_labels == 0) & (pred_labels == 1)] = 2  # FP
-        new_labels[(true_labels == 1) & (pred_labels == 0)] = 3  # FN
-        new_labels[(true_labels == 0) & (pred_labels == 0)] = 4  # TN
+        new_labels = classify_cases(true_labels, pred_labels)  # 케이스 분류
 
         val_data = dataset.data.iloc[val_idx].copy()
         val_data['prediction'] = pred_labels
         val_data['case'] = new_labels
 
-        case_dir = f'../Result/case_samples/TextCNN_v1/fold_{fold}'
+        case_dir = f'../Result/TextCNN_v1/case_samples/fold_{fold}'
         os.makedirs(case_dir, exist_ok=True)
 
-        for case_word in ['TP', 'FP', 'FN', 'TN']:
-            case_df = val_data[val_data['case'] == case_word]
-            case_path = os.path.join(case_dir, f'case_{case_word}.csv')
-            case_df.to_csv(case_path, index=False, encoding='utf-8')
-            print(f"Case {case_word} 샘플 {len(case_df)}개 저장 완료: {case_path}")
+        save_case_samples(fold, val_data, case_dir, metrics)  # 케이스별 저장 + 진단
 
 # 최종 평가 함수
 def evaluate(model, dataloader):
@@ -319,7 +389,10 @@ def train(model, dataloader, optimizer, scaler, fold, epoch, epochs):
 
     print(f"\nFold {fold} | Epoch {epoch}/{epochs} Completed | Loss: {avg_loss:.5f} | Acc: {train_acc:.4f}\n")
 
-    return avg_loss
+    return {
+        'avg_loss': avg_loss,
+        'accuracy': train_acc
+    }
 
 if __name__ == '__main__':
     dataset = VoicePhishingDataset()
@@ -348,33 +421,43 @@ if __name__ == '__main__':
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_cosine_annealing)
         scaler = GradScaler()
 
+        train_metrics_list = []
+        val_metrics_list = []
+
         # 에포크마다 학습 수행
         for epoch in range(1, num_epochs + 1):
-            train_loss = train(model, train_loader, optimizer, scaler, fold, epoch, num_epochs)
+            train_metrics = train(model, train_loader, optimizer, scaler, fold, epoch, num_epochs)
             scheduler.step()
 
-            metrics = evaluate(model, val_loader)
-            if early_stopping(metrics['avg_loss']):
-                report_evaluation(fold, metrics, dataset, val_idx)
+            val_metrics = evaluate(model, val_loader)
+
+            train_metrics_list.append(train_metrics)
+            val_metrics_list.append(val_metrics)
+
+            if early_stopping(val_metrics['avg_loss']):
+                report_evaluation(fold, val_metrics, dataset, val_idx)
                 break
 
+        # Fold 끝난 후 그래프 저장
+        plot_metrics_from_lists(fold, train_metrics_list, val_metrics_list)
+
         # 평가
-        fold_metrics['loss'].append(metrics['avg_loss'])
-        fold_metrics['acc'].append(metrics['accuracy'])
-        fold_metrics['roc_auc'].append(metrics['roc_auc'])
-        fold_metrics['true_acc'].append(metrics['true_acc'])
-        fold_metrics['false_acc'].append(metrics['false_acc'])
+        fold_metrics['loss'].append(val_metrics['avg_loss'])
+        fold_metrics['acc'].append(val_metrics['accuracy'])
+        fold_metrics['roc_auc'].append(val_metrics['roc_auc'])
+        fold_metrics['true_acc'].append(val_metrics['true_acc'])
+        fold_metrics['false_acc'].append(val_metrics['false_acc'])
 
         # fold 모델 저장 (각 fold마다 저장)
-        model_dir = '../Result/model/exaone_TextCNN_v1'
+        model_dir = '../Result/TextCNN_v1/model/'
         os.makedirs(model_dir, exist_ok=True)
         fold_model_file = os.path.join(model_dir, f'fold_{fold}.pth')
         torch.save(model.state_dict(), fold_model_file)
         print(f"Fold {fold} 모델 저장 완료: {fold_model_file}\n")
 
         # 현재 fold가 최적의 성능(ROC AUC)이라면 모델을 저장 및 갱신
-        if metrics['roc_auc'] > best_roc_auc:
-            best_roc_auc = metrics['roc_auc']
+        if val_metrics['roc_auc'] > best_roc_auc:
+            best_roc_auc = val_metrics['roc_auc']
             best_fold = fold
             best_model_file = fold_model_file
 

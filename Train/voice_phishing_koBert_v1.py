@@ -18,7 +18,7 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 # 파일 경로
 data_path = "../dataset/Interactive_Dataset/Interactive_VP_Dataset_kobert_360_v3.csv"
 keyword_csv_path = "../dataset/phishing_words.csv"
-model_dir = "../Result/model/kobert_v1"
+model_dir = "../Result/kobert_v1/model"
 
 #디바이스 정의
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
