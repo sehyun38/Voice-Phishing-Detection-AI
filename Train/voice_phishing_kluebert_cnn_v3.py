@@ -38,7 +38,7 @@ embed_size = 256
 num_classes = 2
 
 # 파일 경로 설정
-file_path = '../보류/Interactive_VP_Dataset_exaone_360_v3.csv'
+file_path =  '../dataset/Interactive_Dataset/Interactive_VP_Dataset_kluebert_360_v1.csv'
 precomputed_weights_path = '../token_weight/token_weights_kluebert.pt'
 
 #그래프 저장 "SAVE", "SHOW"

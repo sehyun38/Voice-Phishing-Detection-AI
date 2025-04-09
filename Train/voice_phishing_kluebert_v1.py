@@ -8,6 +8,7 @@ batch size : 32
 csv : 1(보이스 피싱), 0(일상 대화) 비율 1:1 불용어 제거, 중요 키워드 가중치 계산 , 인코딩 utf-8(cp949)
 cross-validation 사용, ROCAUC, GradScaler, cosine-Schedule
 """
+
 import os
 import sys
 import torch
@@ -455,12 +456,14 @@ if __name__ == "__main__":
     dataset = VoicePhishingDataset(use_precomputed_weights=True)
     labels = dataset.data['label'].values
 
-    lengths = [len(tokenizer.encode(text, max_length=512, truncation=False)) for text in dataset.data['transcript']]
-    plt.hist(lengths, bins=50)
-    plt.xlabel("Token Length")
-    plt.ylabel("Count")
-    plt.title("Token Length Distribution")
-    plt.show()
+
+    if DEBUG_MODE:
+        lengths = [len(tokenizer.encode(text, max_length=512, truncation=False)) for text in dataset.data['transcript']]
+        plt.hist(lengths, bins=50)
+        plt.xlabel("Token Length")
+        plt.ylabel("Count")
+        plt.title("Token Length Distribution")
+        plt.show()
 
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     fold_metrics = {'loss': [], 'acc': [], 'roc_auc': [], 'true_acc': [], 'false_acc': []}
@@ -479,7 +482,7 @@ if __name__ == "__main__":
         criterion = nn.CrossEntropyLoss()
 
         optimizer = optim.AdamW(model.parameters(), lr=4e-6 , weight_decay=1e-5)
-        early_stopping = EarlyStopping(patience=5, min_delta=0.001)
+        early_stopping = EarlyStopping(patience=3, min_delta=0.001)
 
         total_steps = len(train_loader) * num_epochs
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.1),  # 워밍업 10%

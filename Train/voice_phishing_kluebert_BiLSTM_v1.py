@@ -235,7 +235,8 @@ def accumulate_predictions(model, dataloader):
             total_loss += loss.item()
 
             probs = torch.softmax(logits, dim=1)[:, 1]
-            preds = torch.argmax(logits, dim=1)
+            THRESHOLD = 0.7
+            preds = (probs > THRESHOLD).long()
 
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())

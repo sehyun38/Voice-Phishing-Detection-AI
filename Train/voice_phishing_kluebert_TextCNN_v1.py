@@ -28,8 +28,8 @@ import shutil
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # print(device)
 
-# EXAone 토큰화 모델 로드
-tokenizer = AutoTokenizer.from_pretrained("LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct", trust_remote_code=True)
+# klue_bert토큰화 모델 로드
+tokenizer = AutoTokenizer.from_pretrained("klue/bert-base", trust_remote_code=True)
 
 # 하이퍼파라미터 설정
 batch_size = 32
