@@ -45,7 +45,7 @@ class SoftVotingApp:
             self.result_label.config(text="텍스트를 입력해주세요.", fg="gray")
             return
 
-        prediction, confidence, probs = predict_soft_voting(text)
+        prediction, confidence, probs = predict_soft_voting(text, threshold=0.6)
 
         if self.log_enabled:
             print("입력된 텍스트:", text)

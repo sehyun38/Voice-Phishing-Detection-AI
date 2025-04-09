@@ -98,17 +98,17 @@ def predict_model(model, input_ids, attention_mask=None):
             logits = model(input_ids=input_ids, attention_mask=attention_mask)
         else:
             logits = model(input_ids)
-        if logits.shape[-1] == 1:
-            prob = torch.sigmoid(logits).item()
-            return [1 - prob, prob]
-        else:
-            probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy().tolist()
-            return probs
+        probs = torch.softmax(logits, dim=-1).squeeze().cpu().numpy().tolist()
+        return probs  # [p0, p1]
 
-def predict_soft_voting(text):
+
+def predict_soft_voting(text, threshold=0.6):
     input_ids, attention_mask = prepare_input(text)
-    all_probs = [predict_model(model, input_ids, attention_mask) for model in models]
-    avg_probs = torch.tensor(all_probs).mean(dim=0).tolist()
-    prediction = int(avg_probs[1] > 0.5)
+    all_probs = [predict_model(model, input_ids, attention_mask) for model in models]  # [[p0, p1], ...]
+    avg_probs = torch.tensor(all_probs).mean(dim=0).tolist()  # 평균 확률 [p0, p1]
+
+    # 여기에 threshold 적용
+    prediction = int(avg_probs[1] >= threshold)  # class 1 확률 기준 판단
     confidence = avg_probs[1]
+
     return prediction, confidence, avg_probs
