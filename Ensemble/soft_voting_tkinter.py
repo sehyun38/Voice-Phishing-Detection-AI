@@ -21,10 +21,10 @@ class SoftVotingApp:
         self.result_label.pack(pady=10)
 
         # Threshold 슬라이더
-        self.threshold_label = tk.Label(self.root, text=f"Threshold: {self.threshold:.2f}", font=("Arial", 10))
+        self.threshold_label = tk.Label(self.root, text=f"Threshold: {self.threshold:.1f}", font=("Arial", 10))
         self.threshold_label.pack(pady=5)
 
-        self.threshold_slider = tk.Scale(self.root, from_=0.0, to=1.0, resolution=0.01, orient="horizontal", command=self.update_threshold)
+        self.threshold_slider = tk.Scale(self.root, from_=0.0, to=1.0, resolution=0.1, orient="horizontal", command=self.update_threshold)
         self.threshold_slider.set(self.threshold)
         self.threshold_slider.pack(pady=10)
 

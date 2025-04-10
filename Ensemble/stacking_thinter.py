@@ -1,22 +1,19 @@
 import torch
 import tkinter as tk
-from transformers import AutoTokenizer
+from ensemble_stacking import models, MetaMLP, predict_stacking_torch
 
-# 이제 import 가능
-from ensemble_stacking import models, MetaMLP, predict_stacking_torch, DEVICE, NUM_CLASSES
+from config import  DEVICE, tokenizer, META_PATH, MAX_LENGTH
 
-# === 설정 ===
-pretrained_model_name = "klue/bert-base"
-max_length = 360
+num_classes = 2
 
 # === 메타 모델 로딩 ===
-meta_model = MetaMLP(input_dim=len(models),num_classes=NUM_CLASSES).to(DEVICE)
-meta_model.load_state_dict(torch.load("../Result/MetaMLP/models/meta_model.pt", map_location=DEVICE))
+meta_model = MetaMLP(input_dim=len(models),num_classes=num_classes).to(DEVICE)
+meta_model.load_state_dict(torch.load(META_PATH, map_location=DEVICE))
 meta_model.eval()
 
 # === 예측 함수 ===
 def encode_text(tokenizer, text):
-    inputs = tokenizer(text, return_tensors='pt', padding='max_length', truncation=True, max_length=max_length)
+    inputs = tokenizer(text, return_tensors='pt', padding='max_length', truncation=True, max_length=MAX_LENGTH)
     return inputs['input_ids'].to(DEVICE).long(), inputs['attention_mask'].to(DEVICE)
 
 # 예측 함수
@@ -101,7 +98,6 @@ class VoicePhishingApp:
 
 # === 메인 ===
 def main():
-    tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name)
     root = tk.Tk()
     app = VoicePhishingApp(root, tokenizer)
     root.mainloop()

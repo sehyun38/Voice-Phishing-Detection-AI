@@ -1,30 +1,31 @@
 import torch
 import tkinter as tk
 from transformers import AutoTokenizer
-from my_models import BiLSTMAttention, TextCNN, RCNN, KLUEBertModel
 
-# === 설정 ===
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-USE_BERT_MODEL = True  # True 시 BERT 모델 포함
+from Train.voice_phishing_kluebert_v1 import pooling
+from config import  VOCAB_SIZE, DEVICE,tokenizer, TOKENIZER_NAME
+from models import  BiLSTMAttention, TextCNN, RCNN, KLUEBertModel
 
-EMBEDDING_DIM = 256
-HIDDEN_DIM = 128
-NUM_CLASSES = 2
+# True 시 BERT 모델 포함
+USE_BERT_MODEL = True
 
-# BERT tokenizer 기반 vocab size
-tokenizer = AutoTokenizer.from_pretrained("klue/bert-base", trust_remote_code=True)
-VOCAB_SIZE = len(tokenizer)
+#하이퍼 파라미터
+batch_size = 32
+num_epochs = 20
+num_classes = 2
+embed_size = 256
+hidden_dim = 128
 
 # === 모델 설정 ===
 MODEL_CONFIGS = {
     "bilstm": {
         "class": BiLSTMAttention,
-        "weight_path": "../Result/BiLSTM/model/best_model.pth",
+        "weight_path": "../Result/BiLSTM_v2/model/best_model.pth",
         "init_args": {
             "vocab_size": VOCAB_SIZE,
-            "embed_dim": EMBEDDING_DIM,
-            "hidden_dim": HIDDEN_DIM,
-            "num_classes": NUM_CLASSES
+            "embed_dim": embed_size,
+            "hidden_dim": hidden_dim,
+            "num_classes": num_classes
         }
     },
     "textcnn": {
@@ -32,8 +33,8 @@ MODEL_CONFIGS = {
         "weight_path": "../Result/TextCNN/model/best_model.pth",
         "init_args": {
             "vocab_size": VOCAB_SIZE,
-            "embed_dim": EMBEDDING_DIM,
-            "num_classes": NUM_CLASSES
+            "embed_dim": embed_size,
+            "num_classes": num_classes
         }
     },
     "rcnn": {
@@ -41,21 +42,20 @@ MODEL_CONFIGS = {
         "weight_path": "../Result/RCNN/model/best_model.pth",
         "init_args": {
             "vocab_size": VOCAB_SIZE,
-            "embed_dim": EMBEDDING_DIM,
-            "hidden_dim": HIDDEN_DIM,
-            "num_classes": NUM_CLASSES
+            "embed_dim": embed_size,
+            "hidden_dim": hidden_dim,
+            "num_classes": num_classes
         }
     },
     "bert": {
         "class": KLUEBertModel,
         "weight_path": "../Result/kluebert_v1/model/best_model.pth",
         "init_args": {
-            "bert_model_name": "klue/bert-base",
-            "num_classes": NUM_CLASSES
+            "pooling": pooling,
+            "num_classes": num_classes
         }
     }
 }
-
 
 # 모델 로딩 함수
 def load_model(model_class, weight_path, init_args):
@@ -65,11 +65,11 @@ def load_model(model_class, weight_path, init_args):
     model.eval()
     return model
 
-
 # 모델 목록
 model_keys = ["bilstm", "textcnn", "rcnn"]
 if USE_BERT_MODEL:
     model_keys.append("bert")
+
 
 models = [
     load_model(
@@ -80,10 +80,8 @@ models = [
     for key in model_keys
 ]
 
-
 # === 예측 함수 ===
 def encode_text(tokenizer, text):
-    """ 텍스트를 받아 input_ids와 attention_mask를 생성하여 반환 """
     encoded = tokenizer(
         text,
         padding="max_length",  # 최대 길이로 패딩
@@ -122,78 +120,3 @@ def predict_soft_voting(text, threshold=0.6):
     confidence = avg_probs[1]
 
     return prediction, confidence, avg_probs
-
-
-# === GUI 앱 ===
-class VoicePhishingApp:
-    def __init__(self, root, tokenizer):
-        self.tokenizer = tokenizer
-        self.root = root
-        self.root.title("보이스피싱 탐지기 (Ensemble Stacking)")
-        self.root.geometry("500x400")
-        self.log_enabled = False
-        self.debounce_after_id = None
-        self.build_ui()
-
-    def build_ui(self):
-        tk.Label(self.root, text="메시지를 입력하세요:", font=("Arial", 12)).pack(pady=10)
-
-        self.text_input = tk.Text(self.root, height=6, width=45, wrap='word', font=("Arial", 12))
-        self.text_input.pack(pady=15)
-
-        self.result_label = tk.Label(self.root, text="입력된 텍스트에 대한 결과가 여기에 표시됩니다.", font=("Arial", 12))
-        self.result_label.pack(pady=10)
-
-        # 로그 출력 토글
-        self.log_toggle_button = tk.Button(self.root, text="터미널 출력 OFF", bg='gray', font=("Arial", 10, "bold"))
-        self.log_toggle_button.config(command=self.toggle_log_output)
-        self.log_toggle_button.pack(pady=5)
-
-        self.text_input.bind('<KeyRelease>', self.debounced_prediction)
-
-    def toggle_log_output(self):
-        self.log_enabled = not self.log_enabled
-        if self.log_enabled:
-            self.log_toggle_button.config(text="터미널 출력 ON", bg='green')
-        else:
-            self.log_toggle_button.config(text="터미널 출력 OFF", bg='gray')
-
-    def debounced_prediction(self, event, delay=300):
-        if self.debounce_after_id is not None:
-            self.root.after_cancel(self.debounce_after_id)
-        self.debounce_after_id = self.root.after(delay, self.perform_prediction)
-
-    def perform_prediction(self):
-        text = self.text_input.get("1.0", "end").strip()
-        if not text:
-            self.result_label.config(text="텍스트를 입력해주세요.", fg="gray")
-            return
-
-        try:
-            label, score, avg_probs = predict_soft_voting(text)  # 여기서 텍스트로 직접 예측 수행
-            result_text = f"{'보이스피싱 의심' if label == 1 else '🟢 정상'} (확률: {score * 100:.2f}%)"
-            result_color = 'red' if label == 1 else 'green'
-            self.result_label.config(text=result_text, fg=result_color)
-
-            if self.log_enabled:
-                print("입력된 텍스트:", text)
-                print("예측 결과:", "보이스피싱 의심" if label == 1 else "정상")
-                print("확률:", f"{score * 100:.2f}%")
-                print("-" * 40)
-
-        except Exception as e:
-            self.result_label.config(text=f"예측 중 오류 발생: {e}", fg="orange")
-            if self.log_enabled:
-                print("[오류]", str(e))
-
-
-# === 메인 ===
-def main():
-    tokenizer = AutoTokenizer.from_pretrained("klue/bert-base")
-    root = tk.Tk()
-    app = VoicePhishingApp(root, tokenizer)
-    root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
