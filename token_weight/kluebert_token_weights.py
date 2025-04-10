@@ -2,19 +2,10 @@ import pandas as pd
 import torch
 import unicodedata
 from tqdm import tqdm
-from transformers import AutoTokenizer
 import math
+from config import tokenizer,FILE_PATH, KEYWORD_PATH, PT_SAVE_PATH, CSV_SAVE_PATH, MAX_LENGTH
 
-# 설정
-transcript_csv = '../dataset/Interactive_Dataset/Interactive_VP_Dataset_kluebert_360_v1.csv'
-keyword_csv = '../dataset/phishing_words.csv'
-pt_save_path = '../token_weight/token_weights_kluebert.pt'
-csv_save_path = '../token_weight/token_weights_kluebert.csv'
-max_length = 360
 DEBUG_MODE = False
-
-# 토크나이저 (KLUE-BERT 기준)
-tokenizer = AutoTokenizer.from_pretrained("klue/bert-base")
 
 # 정규화 함수
 def normalize(text):
@@ -43,13 +34,13 @@ def should_apply_weight(keyword, snippet):
 
 # 데이터 로딩
 try:
-    df = pd.read_csv(transcript_csv, encoding='utf-8')
+    df = pd.read_csv(FILE_PATH, encoding='utf-8')
 except:
-    df = pd.read_csv(transcript_csv, encoding='cp949')
+    df = pd.read_csv(FILE_PATH, encoding='cp949')
 try:
-    kw_df = pd.read_csv(keyword_csv, encoding='utf-8')
+    kw_df = pd.read_csv(KEYWORD_PATH, encoding='utf-8')
 except:
-    kw_df = pd.read_csv(keyword_csv, encoding='cp949')
+    kw_df = pd.read_csv(KEYWORD_PATH, encoding='cp949')
 
 # 키워드 딕셔너리 (띄어쓰기 제거 + 정규화)
 weight_dict = {
@@ -84,7 +75,7 @@ for idx, row in tqdm(df.iterrows(), total=len(df), desc="Generating Token Weight
         text,
         padding='max_length',
         truncation=True,
-        max_length=max_length,
+        max_length=MAX_LENGTH,
         return_offsets_mapping=True,
         return_tensors='pt'
     )
@@ -120,9 +111,9 @@ for idx, row in tqdm(df.iterrows(), total=len(df), desc="Generating Token Weight
                 print(f"{i:03} | {repr(tok):<15} | weight: {w:.4f}")
 
 # 저장
-torch.save(token_weights_dict, pt_save_path)
-print(f"[PT 저장 완료] → {pt_save_path}")
+torch.save(token_weights_dict, PT_SAVE_PATH)
+print(f"[PT 저장 완료] → {PT_SAVE_PATH}")
 
 csv_df = pd.DataFrame(csv_rows)
-csv_df.to_csv(csv_save_path, index=False, encoding='utf-8-sig')
-print(f"[CSV 저장 완료] → {csv_save_path}")
+csv_df.to_csv(CSV_SAVE_PATH, index=False, encoding='utf-8-sig')
+print(f"[CSV 저장 완료] → {CSV_SAVE_PATH}")
