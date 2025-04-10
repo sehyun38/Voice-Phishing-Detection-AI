@@ -17,11 +17,12 @@ meta_model.eval()
 # === 예측 함수 ===
 def encode_text(tokenizer, text):
     inputs = tokenizer(text, return_tensors='pt', padding='max_length', truncation=True, max_length=max_length)
-    return inputs['input_ids'].to(DEVICE).long()
+    return inputs['input_ids'].to(DEVICE).long(), inputs['attention_mask'].to(DEVICE)
 
-def predict(text, tokenizer):
-    input_tensor = encode_text(tokenizer, text)
-    return predict_stacking_torch(input_tensor, meta_model)
+# 예측 함수
+def predict(text, tokenizer, threshold=0.7):
+    input_tensor, attention_mask = encode_text(tokenizer, text)  # attention_mask도 받아옴
+    return predict_stacking_torch(input_tensor, attention_mask, meta_model, threshold)  # threshold 전달
 
 # === GUI 앱 ===
 class VoicePhishingApp:
@@ -29,9 +30,10 @@ class VoicePhishingApp:
         self.tokenizer = tokenizer
         self.root = root
         self.root.title("보이스피싱 탐지기 (Ensemble Stacking)")
-        self.root.geometry("500x400")
+        self.root.geometry("500x450")  # 크기 수정
         self.log_enabled = False
         self.debounce_after_id = None
+        self.threshold = 0.7  # 기본 threshold 값을 0.7로 설정
         self.build_ui()
 
     def build_ui(self):
@@ -43,12 +45,24 @@ class VoicePhishingApp:
         self.result_label = tk.Label(self.root, text="입력된 텍스트에 대한 결과가 여기에 표시됩니다.", font=("Arial", 12))
         self.result_label.pack(pady=10)
 
+        # 스레시홀드 조정 슬라이더
+        self.threshold_label = tk.Label(self.root, text=f"Threshold: {self.threshold:.2f}", font=("Arial", 10))
+        self.threshold_label.pack(pady=5)
+
+        self.threshold_slider = tk.Scale(self.root, from_=0.0, to=1.0, resolution=0.01, orient="horizontal", command=self.update_threshold)
+        self.threshold_slider.set(self.threshold)
+        self.threshold_slider.pack(pady=10)
+
         # 로그 출력 토글
         self.log_toggle_button = tk.Button(self.root, text="터미널 출력 OFF", bg='gray', font=("Arial", 10, "bold"))
         self.log_toggle_button.config(command=self.toggle_log_output)
         self.log_toggle_button.pack(pady=5)
 
         self.text_input.bind('<KeyRelease>', self.debounced_prediction)
+
+    def update_threshold(self, val):
+        self.threshold = float(val)
+        self.threshold_label.config(text=f"Threshold: {self.threshold:.2f}")  # Threshold 값을 UI에 업데이트
 
     def toggle_log_output(self):
         self.log_enabled = not self.log_enabled
@@ -69,7 +83,7 @@ class VoicePhishingApp:
             return
 
         try:
-            label, score = predict(text, self.tokenizer)
+            label, score = predict(text, self.tokenizer, threshold=self.threshold)  # threshold를 전달
             result_text = f"{'보이스피싱 의심' if label == 1 else '🟢 정상'} (확률: {score * 100:.2f}%)"
             result_color = 'red' if label == 1 else 'green'
             self.result_label.config(text=result_text, fg=result_color)

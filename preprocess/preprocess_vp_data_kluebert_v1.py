@@ -46,6 +46,18 @@ DEFAULT_STOPWORDS = {
     "뭐", "그니까", "그러니까", "그러면", "근데", "아니 근데", "음 그래서",
     "아 네", "아 예", "아 그렇군요", "아 그래요?", "아 그렇죠", "네 네"
 }
+#csv 파일 로드
+try:
+    df = pd.read_csv(INPUT_CSV_PATH, encoding='utf-8')
+except:
+    df = pd.read_csv(INPUT_CSV_PATH, encoding='cp949')
+
+# 가중치 단어 파일 로드
+try:
+    important_words = set(pd.read_csv(IMPORTANT_WORDS_FILE, encoding='utf-8')['word'].dropna().tolist())
+except:
+    important_words = set(pd.read_csv(IMPORTANT_WORDS_FILE, encoding='cp949')['word'].dropna().tolist())
+
 
 # 조사 불러오기
 def load_particle_hints():
@@ -147,16 +159,6 @@ def process_dataset(df, tokenizer, stopwords, important_words, particle_hints, s
     return pd.DataFrame(new_data)
 
 # 실행
-try:
-    df = pd.read_csv(INPUT_CSV_PATH, encoding='utf-8')
-except:
-    df = pd.read_csv(INPUT_CSV_PATH, encoding='cp949')
-
-try:
-    important_words = set(pd.read_csv(IMPORTANT_WORDS_FILE, encoding='utf-8')['word'].dropna().tolist())
-except:
-    important_words = set(pd.read_csv(IMPORTANT_WORDS_FILE, encoding='cp949')['word'].dropna().tolist())
-
 particle_hints = load_particle_hints()
 sentence_endings = load_sentence_endings()
 
