@@ -112,7 +112,7 @@ def plot_roc_curve(fold, all_labels, all_probs, save_dir, MODE="SAVE"):
     plt.close()
 
 # 배치별 평가 결과 집계 함수
-def accumulate_predictions(model, dataloader,DEVICE, criterion, model_name = None, USE_TOKEN_WEIGHTS=None):
+def accumulate_predictions(model, dataloader,DEVICE, criterion, model_name = None):
     model.eval()
     total_loss = 0
     all_preds, all_labels, all_probs = [], [], []
@@ -122,14 +122,11 @@ def accumulate_predictions(model, dataloader,DEVICE, criterion, model_name = Non
             input_ids = batch['input_ids'].to(DEVICE)
             attention_mask = batch['attention_mask'].to(DEVICE)
             labels = batch['label'].to(DEVICE)
-            token_weights = batch['token_weights'].to(DEVICE)
 
-            if model_name == "kluebert_v1":
-                logits = model(input_ids, attention_mask, token_weights, USE_TOKEN_WEIGHTS)
-            elif model_name == "TextCNN":
-                logits = model(input_ids, token_weights)
+            if model_name == "TextCNN" or model_name == "RCNN":
+                logits = model(input_ids)
             else:
-                logits = model(input_ids, attention_mask, token_weights)
+                logits = model(input_ids, attention_mask)
 
             loss = criterion(logits, labels)
             total_loss += loss.item()
@@ -167,19 +164,10 @@ def compute_metrics(total_loss, all_preds, all_labels, all_probs):
 # 평가 결과를 텍스트로 출력하는 함수
 def print_evaluation_summary(fold, metrics):
     print(f"\nFold {fold} Evaluation Report:")
-    print(classification_report(metrics['all_labels'], metrics['all_preds'], digits=4))
+    print(classification_report(metrics['all_labels'], metrics['all_preds'], digits=4,zero_division=0))
     print(f"Accuracy: {metrics['accuracy']:.4f}, ROC AUC: {metrics['roc_auc']:.4f}")
     print(f"True Positive Rate: {metrics['true_acc']:.4f}")
     print(f"True Negative Rate: {metrics['false_acc']:.4f}\n")
-
-# 예측값과 정답값을 비교하여 케이스(TP, FP, FN, TN) 라벨을 생성하는 함수
-def classify_cases(true_labels, pred_labels):
-    new_labels = np.zeros_like(true_labels)
-    new_labels[(true_labels == 1) & (pred_labels == 1)] = 1  # TP
-    new_labels[(true_labels == 0) & (pred_labels == 1)] = 2  # FP
-    new_labels[(true_labels == 1) & (pred_labels == 0)] = 3  # FN
-    new_labels[(true_labels == 0) & (pred_labels == 0)] = 4  # TN
-    return new_labels
 
 # 예측값과 정답값을 비교하여 케이스(TP, FP, FN, TN) 라벨을 생성하는 함수
 def classify_cases(true_labels, pred_labels):
@@ -232,3 +220,40 @@ def report_evaluation(fold, metrics, save_dir, case_dir, MODE, dataset=None, val
         os.makedirs(case_dir, exist_ok=True)
 
         save_case_samples(fold, val_data, case_dir, metrics)  # 케이스별 저장 + 진단
+
+# 조기 종료: val_loss + roc_auc 기준
+class DualEarlyStopping:
+    def __init__(self, patience=10, min_delta=0.00001, focus='balanced'):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.focus = focus
+
+        self.best_loss = float('inf')
+        self.best_auc = -float('inf')
+        self.counter = 0
+        self.best_model_state = None  # 최적 가중치 저장용
+
+    def __call__(self, val_auc, val_loss, model):
+        improved = False
+
+        if self.focus == 'loss':
+            if val_loss < self.best_loss - self.min_delta:
+                self.best_loss = val_loss
+                improved = True
+        elif self.focus == 'auc':
+            if val_auc > self.best_auc + self.min_delta:
+                self.best_auc = val_auc
+                improved = True
+        elif self.focus == 'balanced':
+            if (val_auc > self.best_auc + self.min_delta) or (val_loss < self.best_loss - self.min_delta):
+                improved = True
+                self.best_auc = max(self.best_auc, val_auc)
+                self.best_loss = min(self.best_loss, val_loss)
+
+        if improved:
+            self.counter = 0
+            self.best_model_state = model.state_dict()  # 💾 최적 가중치 저장
+        else:
+            self.counter += 1
+
+        return self.counter >= self.patience
