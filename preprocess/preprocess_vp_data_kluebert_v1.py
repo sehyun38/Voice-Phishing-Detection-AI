@@ -10,7 +10,7 @@ from config import TOKENIZER_NAME, FILE_PATH, INPUT_FILE_PATH, SENTENCE_ENDINGS_
 OUTPUT_ENCODING = "utf-8"
 
 MIN_TOKEN_COUNT = 15        # 필터링 있는 최소 토큰 수
-MIN_WORD_COUNT = 6          #필터일 없는 최소 단어 길이 수
+MIN_WORD_COUNT = 6          # 필터링 없는 최소 단어 길이 수
 
 TEXT_COLUMN = "transcript"
 LABEL_COLUMN = "label"
@@ -24,7 +24,7 @@ def load_csv_with_encoding(path):
     except:
         return pd.read_csv(path, encoding='cp949')
 
-# 3. 조사 및 종결어미 리스트 로딩
+# 3. 조사 및 종결 어미 리스트 로딩
 def load_sentence_endings():
     try:
         return load_csv_with_encoding(SENTENCE_ENDINGS_FILE)['hint'].dropna().tolist()
@@ -32,8 +32,8 @@ def load_sentence_endings():
         print(f"Failed to load sentence endings: {e}")
         return []
 
-# 4. 문장 분할 함수 (종결어미 기준)
-def split_text_preserve_context(text, tokenizer, max_len, sentence_endings):
+# 4. 문장 분할 함수 (종결 어미 기준)
+def split_text_preserve_context(text,  max_len):
     tokens = tokenizer.tokenize(text)
     input_ids = tokenizer.convert_tokens_to_ids(tokens)
     if len(input_ids) <= max_len:
@@ -83,7 +83,7 @@ def remove_repeated_words_with_okt(text):
 
 
 # 6. 불용어 제거 및 반복어 제거 (조건부 처리)
-def context_based_filtering(text, use_filtering=True,  stop_pos=None,  important_words=None):
+def context_based_filtering(text, use_filtering=True,  stop_pos=None):
     if stop_pos is None:
         stop_pos = ["Punctuation"]
 
@@ -103,8 +103,8 @@ def context_based_filtering(text, use_filtering=True,  stop_pos=None,  important
     cleaned_text = remove_repeated_words_with_okt(cleaned_text)
     return cleaned_text.strip(), list(removed_tokens), text
 
-# 7. 전처리 파이프라인
-def process_dataset(df, tokenizer, important_words, sentence_endings):
+# 7. 전처리 파이프 라인
+def process_dataset():
     new_data = []
     removed_stopword_count = 0
 
@@ -112,17 +112,16 @@ def process_dataset(df, tokenizer, important_words, sentence_endings):
         text = row[TEXT_COLUMN]
         label = row[LABEL_COLUMN]
 
-        chunks = split_text_preserve_context(text, tokenizer, MAX_LENGTH, sentence_endings)
+        chunks = split_text_preserve_context(text, MAX_LENGTH)
         final_chunks = []
         for chunk in chunks:
-            final_chunks.extend(split_text_preserve_context(chunk, tokenizer, MAX_LENGTH, sentence_endings))
+            final_chunks.extend(split_text_preserve_context(chunk, MAX_LENGTH))
 
         for chunk in final_chunks:
             filtered_text, removed_tokens, original_text = context_based_filtering(
                 chunk,
                 use_filtering=USE_STOPWORD_FILTERING,
                 stop_pos=["Punctuation"],
-                important_words=important_words
             )
             filtered_tokens = tokenizer.tokenize(filtered_text)
             removed_stopword_count += len(tokenizer.tokenize(chunk)) - len(filtered_tokens)
@@ -146,7 +145,7 @@ important_words = set(load_csv_with_encoding(KEYWORD_PATH)['word'].dropna().toli
 sentence_endings = load_sentence_endings()
 tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_NAME, trust_remote_code=True)
 
-processed_df = process_dataset(df, tokenizer, important_words, sentence_endings)
+processed_df = process_dataset()
 processed_df.to_csv(FILE_PATH, index=False, encoding=OUTPUT_ENCODING)
 
 print("File saved successfully.")
