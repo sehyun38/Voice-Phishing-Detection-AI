@@ -1,10 +1,10 @@
 """
 Tokenizer : KlueBert 최대 512(360 설정)
-Model : Bertr기반 koBert Classifier
+Model : Bert기반 koBert Classifier
 optimizer : AdamW
 epochs : 20
 batch size : 32
-조기종료 :  5회
+조기 종료 :  5회
 csv : 1(보이스 피싱), 0(일상 대화) 비율 1:1 불용어 제거, 중요 키워드 가중치 계산 , 인코딩 utf-8(cp949)
 cross-validation 사용, ROCAUC, GradScaler, cosine-Schedule
 """
@@ -23,11 +23,10 @@ from sklearn.metrics import accuracy_score
 from torch.amp import GradScaler, autocast
 import shutil
 
-from config import  FILE_PATH, PT_SAVE_PATH, DEVICE, tokenizer,  MAX_LENGTH
+from config import FILE_PATH, PT_SAVE_PATH, DEVICE, tokenizer, MAX_LENGTH, VOCAB_SIZE
 from models import KLUEBertModel
-from utils import (VoicePhishingDataset, accumulate_predictions,
-                    compute_metrics, report_evaluation)
-
+from utils import (VoicePhishingDataset, accumulate_predictions, plot_metrics_from_lists,
+                    compute_metrics, report_evaluation,DualEarlyStopping)
 
 #모델 이름
 model_name = "kluebert_v1"
@@ -53,30 +52,18 @@ save_dir = f'../Result/{model_name}/ROCAUC'
 case_dir = f'../Result/{model_name}/case_samples'
 model_dir = f'../Result/{model_name}/model'
 
-# 조기 종료 클래스
-class EarlyStopping:
-    def __init__(self, patience=3, min_delta=0.001):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_loss = float('inf')
-        self.counter = 0
-
-    def __call__(self, val_loss):
-        if val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
-            self.counter = 0
-        else:
-            self.counter += 1
-        return self.counter >= self.patience
+#모델 구조 저장
+model_structure_save = True
+criterion = nn.CrossEntropyLoss()
 
 # 최종 평가 함수
 def evaluate(model, dataloader):
     total_loss, all_preds, all_labels, all_probs \
-        = accumulate_predictions(model, dataloader, DEVICE, criterion, model_name, USE_TOKEN_WEIGHTS)
+        = accumulate_predictions(model, dataloader, DEVICE, criterion, model_name)
     return compute_metrics(total_loss, all_preds, all_labels, all_probs)
 
 # 학습 함수
-def train(model, dataloader, optimizer, scheduler, scaler, fold, epoch, epochs):
+def train(model, dataloader, optimizer, scaler, fold, epoch, epochs):
     model.train()
     total_loss = 0
     all_preds, all_labels = [], []
@@ -92,7 +79,7 @@ def train(model, dataloader, optimizer, scheduler, scaler, fold, epoch, epochs):
 
         if DEVICE == "cuda":
             with autocast(device_type='cuda'):
-                logits = model(input_ids, attention_mask, token_weights, USE_TOKEN_WEIGHTS)
+                logits = model(input_ids, attention_mask, token_weights)
                 loss = criterion(logits, labels)
 
             scaler.scale(loss).backward()
@@ -103,14 +90,12 @@ def train(model, dataloader, optimizer, scheduler, scaler, fold, epoch, epochs):
             scaler.update()
 
         else:
-            logits = model(input_ids, attention_mask,token_weights, USE_TOKEN_WEIGHTS)
+            logits = model(input_ids, attention_mask, token_weights)
             loss = criterion(logits, labels)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-
-        scheduler.step()
 
         total_loss += loss.item()
         preds = torch.argmax(logits, dim=1)
@@ -130,12 +115,12 @@ def train(model, dataloader, optimizer, scheduler, scaler, fold, epoch, epochs):
         'accuracy': train_acc
     }
 
-if __name__ == "__main__":
+def main():
     dataset = VoicePhishingDataset(FILE_PATH, PT_SAVE_PATH, tokenizer, MAX_LENGTH, USE_TOKEN_WEIGHTS, use_precomputed_weights=True)
     labels = dataset.data['label'].values
 
     if DEBUG_MODE:
-        lengths = [len(tokenizer.encode(text, max_length=512, truncation=False)) for text in dataset.data['transcript']]
+        lengths = [len(tokenizer.encode(text, max_length=MAX_LENGTH, truncation=False)) for text in dataset.data['transcript']]
         plt.hist(lengths, bins=50)
         plt.xlabel("Token Length")
         plt.ylabel("Count")
@@ -156,10 +141,9 @@ if __name__ == "__main__":
         val_loader = DataLoader(Subset(dataset, val_idx), batch_size=batch_size)
 
         model = KLUEBertModel(pooling, num_classes).to(DEVICE)
-        criterion = nn.CrossEntropyLoss()
 
         optimizer = optim.AdamW(model.parameters(), lr=4e-6 , weight_decay=1e-5)
-        early_stopping = EarlyStopping(patience=3, min_delta=0.001)
+        early_stopping = DualEarlyStopping(patience=30, min_delta=0.0001, focus="loss")
 
         total_steps = len(train_loader) * num_epochs
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.1),  # 워밍업 10%
@@ -169,17 +153,25 @@ if __name__ == "__main__":
         train_metrics_list = []
         val_metrics_list = []
 
-        # 에포크마다 학습 수행
+        # 에포크 학습 수행
         for epoch in range(1, num_epochs + 1):
-            train_metrics = train(model, train_loader, optimizer, scheduler, scaler, fold, epoch,num_epochs)
+            train_metrics = train(model, train_loader, optimizer, scaler, fold, epoch, num_epochs)
+            scheduler.step()
+
             val_metrics = evaluate(model, val_loader)
 
             train_metrics_list.append(train_metrics)
             val_metrics_list.append(val_metrics)
 
-            if early_stopping(val_metrics['avg_loss']):
-                report_evaluation(fold, val_metrics, case_dir, MODE, dataset, val_idx)
+            if early_stopping(val_metrics['roc_auc'], val_metrics['avg_loss'],model):
+                model.load_state_dict(early_stopping.best_model_state)
                 break
+
+        # 무조건 report_evaluation 실행
+        report_evaluation(fold, val_metrics, save_dir, case_dir, MODE, dataset, val_idx)
+
+        # Fold 끝난 후 그래프 저장
+        plot_metrics_from_lists(fold, train_metrics_list, val_metrics_list, save_path, MODE)
 
         # 평가
         fold_metrics['loss'].append(val_metrics['avg_loss'])
@@ -188,13 +180,21 @@ if __name__ == "__main__":
         fold_metrics['true_acc'].append(val_metrics['true_acc'])
         fold_metrics['false_acc'].append(val_metrics['false_acc'])
 
-        # fold 모델 저장 (각 fold마다 저장)
+        # fold 모델 저장 (각 fold 저장)
         os.makedirs(model_dir, exist_ok=True)
-        fold_model_file = os.path.join(model_dir, f'fold_{fold}.pth')
-        torch.save(model.state_dict(), fold_model_file)
+
+        if model_structure_save:
+            fold_model_file = os.path.join(model_dir, f'fold_{fold}.pt')
+            dummy_input_ids = torch.randint(0, VOCAB_SIZE, (1, MAX_LENGTH)).to(DEVICE)
+            dummy_attention_mask = torch.ones((1, MAX_LENGTH), dtype=torch.long).to(DEVICE)
+            traced_model = torch.jit.trace(model, (dummy_input_ids, dummy_attention_mask))
+            traced_model.save(fold_model_file)
+        else:
+            fold_model_file = os.path.join(model_dir, f'fold_{fold}.pth')
+            torch.save(model.state_dict(), fold_model_file)
         print(f"Fold {fold} 모델 저장 완료: {fold_model_file}\n")
 
-        # 현재 fold가 최적의 성능(ROC AUC)이라면 모델을 저장 및 갱신
+        # 현재 fold 중 최적의 성능(ROC AUC)이라면 모델을 저장 및 갱신
         if val_metrics['roc_auc'] > best_roc_auc:
             best_roc_auc = val_metrics['roc_auc']
             best_fold = fold
@@ -207,5 +207,11 @@ if __name__ == "__main__":
         print(f"Average {key.capitalize()}: {np.mean(values):.4f}")
 
     print(f"\n최적의 모델은 Fold {best_fold}이며, 모델 파일 이름은 '{best_model_file}' 입니다.")
-    final_model_name = os.path.join(model_dir, 'best_model.pth')
+    if model_structure_save:
+        final_model_name = os.path.join(model_dir, 'best_model.pt')
+    else:
+        final_model_name = os.path.join(model_dir, 'best_model.pth')
     shutil.copy(best_model_file, final_model_name)
+
+if __name__ == "__main__":
+    main()

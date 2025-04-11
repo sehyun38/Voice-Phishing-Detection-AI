@@ -4,7 +4,7 @@ Model : CNN
 optimizer : Adam
 epochs : 100
 batch size : 32
-조기종료 :  5회
+조기 종료 :  5회
 csv : 1(보이스 피싱), 0(일상 대화) 비율 1:1 불용어 제거, 중요 키워드 가중치 계산 , 인코딩 utf-8(cp949)
 cross-validation 사용, ROCAUC
 """
@@ -23,18 +23,19 @@ import shutil
 from config import  FILE_PATH, PT_SAVE_PATH, DEVICE, tokenizer, VOCAB_SIZE, MAX_LENGTH
 from models import CNNModelV2
 from utils import (VoicePhishingDataset, plot_metrics_from_lists, accumulate_predictions,
-                    compute_metrics, report_evaluation)
-
+                    compute_metrics, report_evaluation, DualEarlyStopping)
 #모델 이름
 model_name = "CNN_v2"
 
-# 하이퍼파라미터 설정
+# 하이퍼 파라미터 설정
 batch_size = 32
 num_epochs = 100
 embed_size = 256
 num_classes = 2
+model_structure_save = True          #모델 구조 저장
+criterion = nn.CrossEntropyLoss()
 
-#그래프 저장 "SAVE", "SHOW"
+# 그래프 저장 "SAVE", "SHOW"
 MODE = "SAVE"
 
 #토큰, 가중치 출력
@@ -54,21 +55,6 @@ def evaluate(model, dataloader):
     total_loss, all_preds, all_labels, all_probs\
         =  accumulate_predictions(model, dataloader, DEVICE, criterion)
     return compute_metrics(total_loss, all_preds, all_labels, all_probs)
-
-class EarlyStopping:
-    def __init__(self, patience=3, min_delta=0.001):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_loss = float('inf')
-        self.counter = 0
-
-    def __call__(self, val_loss):
-        if val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
-            self.counter = 0
-        else:
-            self.counter += 1
-        return self.counter >= self.patience
 
 def train(model, dataloader, optimizer, scaler, fold, epoch, epochs):
     model.train()
@@ -122,7 +108,7 @@ def train(model, dataloader, optimizer, scaler, fold, epoch, epochs):
         'accuracy': train_acc
     }
 
-if __name__ == '__main__':
+def main():
     dataset = VoicePhishingDataset(FILE_PATH, PT_SAVE_PATH, tokenizer, MAX_LENGTH, USE_TOKEN_WEIGHTS)
     labels = dataset.data['label'].values
 
@@ -140,17 +126,16 @@ if __name__ == '__main__':
         val_loader = DataLoader(Subset(dataset, val_idx), batch_size=batch_size)
 
         model = CNNModelV2(VOCAB_SIZE, embed_size, num_classes).to(DEVICE)
-        criterion = nn.CrossEntropyLoss()
 
         optimizer = optim.Adam(model.parameters(), lr= 2e-5, weight_decay=5e-5)
-        early_stopping = EarlyStopping(patience=30, min_delta=0.001)
+        early_stopping = DualEarlyStopping(patience=30, min_delta=0.0001)
 
         scaler = GradScaler()
 
         train_metrics_list = []
         val_metrics_list = []
 
-        # 에포크마다 학습 수행
+        # 에포크 학습 수행
         for epoch in range(1, num_epochs + 1):
             train_metrics = train(model, train_loader, optimizer, scaler, fold, epoch, num_epochs)
             val_metrics = evaluate(model, val_loader)
@@ -158,10 +143,12 @@ if __name__ == '__main__':
             train_metrics_list.append(train_metrics)
             val_metrics_list.append(val_metrics)
 
-            if early_stopping(val_metrics['avg_loss']):
-                report_evaluation(fold, val_metrics, case_dir, MODE, dataset, val_idx)
+            if early_stopping(val_metrics['roc_auc'], val_metrics['avg_loss'],model):
+                model.load_state_dict(early_stopping.best_model_state)
                 break
 
+        # 무조건 report_evaluation 실행
+        report_evaluation(fold, val_metrics, save_dir, case_dir, MODE, dataset, val_idx)
         # Fold 끝난 후 그래프 저장
         plot_metrics_from_lists(fold, train_metrics_list, val_metrics_list, save_path, MODE)
 
@@ -173,11 +160,17 @@ if __name__ == '__main__':
         fold_metrics['false_acc'].append(val_metrics['false_acc'])
 
         os.makedirs(model_dir, exist_ok=True)
-        fold_model_file = os.path.join(model_dir, f'fold_{fold}.pth')
-        torch.save(model.state_dict(), fold_model_file)
+
+        if model_structure_save:
+            fold_model_file = os.path.join(model_dir, f'fold_{fold}.pt')
+            scripted_model = torch.jit.script(model)
+            torch.jit.save(scripted_model, fold_model_file)
+        else:
+            fold_model_file = os.path.join(model_dir, f'fold_{fold}.pth')
+            torch.save(model.state_dict(), fold_model_file)
         print(f"Fold {fold} 모델 저장 완료: {fold_model_file}\n")
 
-        # 현재 fold가 최적의 성능(ROC AUC)이라면 모델을 저장 및 갱신
+        # 현재 fold 중 최적의 성능(ROC AUC)이라면 모델을 저장 및 갱신
         if val_metrics['roc_auc'] > best_roc_auc:
             best_roc_auc = val_metrics['roc_auc']
             best_fold = fold
@@ -190,5 +183,11 @@ if __name__ == '__main__':
         print(f"Average {key.capitalize()}: {np.mean(values):.4f}")
 
     print(f"\n최적의 모델은 Fold {best_fold}이며, 모델 파일 이름은 '{best_model_file}' 입니다.")
-    final_model_name = os.path.join(model_dir, 'best_model.pth')
+    if model_structure_save:
+        final_model_name = os.path.join(model_dir, 'best_model.pt')
+    else:
+        final_model_name = os.path.join(model_dir, 'best_model.pth')
     shutil.copy(best_model_file, final_model_name)
+
+if __name__ == '__main__':
+    main()
