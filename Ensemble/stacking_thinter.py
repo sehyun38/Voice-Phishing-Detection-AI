@@ -5,13 +5,14 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
 from ensemble_stacking import load_all_models, MetaMLP, predict_stacking_torch, model_structure_load
-from config import  DEVICE, tokenizer, MAX_LENGTH
+from config import DEVICE, tokenizer, MAX_LENGTH, num_classes
 
-font_path = "C:/Windows/Fonts/malgun.ttf"  # Windows 경우
+# 한글 폰트
+font_path = "C:/Windows/Fonts/malgun.ttf"
 font_prop = font_manager.FontProperties(fname=font_path)
 plt.rcParams['font.family'] = font_prop.get_name()
 
-num_classes = 2
+# 모델 경로
 model_dir = "../Result/MetaMLP/models"
 
 # === 메타 모델 로딩 ===
@@ -25,51 +26,83 @@ else:
     meta_model.load_state_dict(torch.load(META_PATH, map_location=DEVICE))
     meta_model.eval()
 
-# === 예측 함수 ===
+# === 텍스트 인코딩 및 예측 ===
 def encode_text(text):
     inputs = tokenizer(text, return_tensors='pt', padding='max_length', truncation=True, max_length=MAX_LENGTH)
     return inputs['input_ids'].to(DEVICE).long(), inputs['attention_mask'].to(DEVICE)
 
-# 예측 함수
-def predict(text, threshold=0.7):
-    input_tensor, attention_mask = encode_text(text)  # attention_mask 받아옴
-    return predict_stacking_torch(input_tensor, attention_mask, meta_model, threshold)  # threshold 전달
+def predict(text, threshold):
+    input_tensor, attention_mask = encode_text(text)
+    return predict_stacking_torch(input_tensor, attention_mask, meta_model, threshold)
+
+# === 신뢰도 기반 메시지 생성 ===
+def get_prediction_message(prediction, confidence):
+    confidence_percent = confidence * 100
+    if prediction == 1:
+        if confidence >= 0.85:
+            return f"매우 높은 확률로 보이스피싱입니다 ({confidence_percent:.2f}%)", "red"
+        elif confidence >= 0.65:
+            return f"보이스피싱 가능성 있음 ({confidence_percent:.2f}%)", "orange"
+        else:
+            return f"의심되지만 확신은 부족 ({confidence_percent:.2f}%)", "orange"
+    else:
+        return f"정상으로 판단됨 ({confidence_percent:.2f}%)", "green"
+
+# === 경고 상태 관리 클래스 ===
+class WarningManager:
+    def __init__(self):
+        self.counter = 0
+        self.delay_active = False
+
+    def should_warn(self, prediction):
+        if prediction == 1 and not self.delay_active:
+            self.counter += 1
+            self.delay_active = True
+            return True
+        return False
+
+    def reset_delay(self):
+        self.delay_active = False
+
+    def reset(self):
+        self.counter = 0
+        self.delay_active = False
 
 # === GUI 앱 ===
 class VoicePhishingApp:
     def __init__(self, root):
         self.root = root
         self.root.title("보이스피싱 탐지기 (Ensemble Stacking)")
-        self.root.geometry("600x60")  # 크기 수정
-        self.threshold = 0.6
-        self.warning_counter = 0
-        self.warning_delay_active = False
+        self.root.geometry("600x650")
+
+        self.threshold = 0.5
+        self.warning_manager = WarningManager()
         self.log_enabled = False
         self.debounce_after_id = None
-
-        self.text_input = tk.Text(root, height=6, width=45, wrap='word', font=("Arial", 12))
-        self.result_label = tk.Label(root, text="입력된 텍스트에 대한 결과가 여기에 표시됩니다.", font=("Arial", 12))
-        self.threshold_slider = tk.Scale(self.root, from_=0.0, to=1.0, resolution=0.01, orient="horizontal",
-                                         label="Threshold", command=self.slider_updated)
-        self.threshold_entry = tk.Entry(self.root, width=6, justify="center", font=("Arial", 12))
-        self.log_toggle_button = tk.Button(root, text="터미널 출력 OFF", bg='gray', font=("Arial", 10, "bold"),
-                                           command=self.toggle_log_output)
-        self.reset_button = tk.Button(root, text="경고 카운터 초기화", font=("Arial", 10), command=self.reset_warning)
-        self.plot_button = tk.Button(root, text="확률 시각화", font=("Arial", 10), command=self.plot_probs)
-
         self.last_probs = None
+
+        self.text_input = tk.Text(self.root, height=6, width=45, wrap='word', font=("Arial", 12))
+        self.warning_label = tk.Label(self.root, text="", font=("Arial", 12))
+        self.result_label = tk.Label(self.root, text="입력된 텍스트에 대한 결과가 여기에 표시됩니다.", font=("Arial", 12))
+        self.threshold_slider = tk.Scale(self.root, from_=0.0, to=1.0, resolution=0.1,
+                                         orient="horizontal", label="Threshold", command=self.slider_updated)
+        self.threshold_entry = tk.Entry(self.root, width=6, justify="center", font=("Arial", 12))
+        self.log_toggle_button = tk.Button(self.root, text="터미널 출력 OFF", bg='gray',
+                                           font=("Arial", 10, "bold"), command=self.toggle_log_output)
+        self.reset_button = tk.Button(self.root, text="경고 카운터 초기화", font=("Arial", 10), command=self.reset_warning)
+        self.plot_button = tk.Button(self.root, text="확률 시각화", font=("Arial", 10), command=self.plot_probs)
+
         self.build_ui()
 
     def build_ui(self):
         tk.Label(self.root, text="메시지를 입력하세요:", font=("Arial", 12)).pack(pady=10)
 
-        self.text_input = tk.Text(self.root, height=6, width=45, wrap='word', font=("Arial", 12))
         self.text_input.pack(pady=15)
+        self.warning_label.pack(pady=5)
 
         self.result_label = tk.Label(self.root, text="입력된 텍스트에 대한 결과가 여기에 표시됩니다.", font=("Arial", 12))
-        self.result_label.pack(pady=10)
+        self.result_label.pack(pady=5)
 
-        # threshold 조정 슬라이더
         self.threshold_slider.set(self.threshold)
         self.threshold_slider.pack(pady=10)
 
@@ -78,9 +111,7 @@ class VoicePhishingApp:
         self.threshold_entry.pack(pady=5)
         self.threshold_entry.bind('<Return>', self.entry_updated)
 
-        # 로그 출력 토글
         self.log_toggle_button.pack(pady=5)
-
         self.reset_button.pack(pady=5)
         self.plot_button.pack(pady=5)
 
@@ -88,18 +119,17 @@ class VoicePhishingApp:
 
     def toggle_log_output(self):
         self.log_enabled = not self.log_enabled
-        text = "터미널 출력 ON" if self.log_enabled else "터미널 출력 OFF"
-        bg = "green" if self.log_enabled else "gray"
-        self.log_toggle_button.config(text=text, bg=bg)
-
-    def update_threshold(self, val):
-        self.threshold = float(val)
+        if self.log_enabled:
+            self.log_toggle_button.config(text="터미널 출력 ON", bg='green')
+        else:
+            self.log_toggle_button.config(text="터미널 출력 OFF", bg='gray')
 
     def slider_updated(self, val):
         val = round(float(val), 2)
         self.threshold = val
         self.threshold_entry.delete(0, tk.END)
         self.threshold_entry.insert(0, str(val))
+        self.reset_warning()
 
     def entry_updated(self, event=None):
         try:
@@ -107,15 +137,15 @@ class VoicePhishingApp:
             if 0.0 <= val <= 1.0:
                 self.threshold = val
                 self.threshold_slider.set(val)
+                self.reset_warning()
             else:
                 raise ValueError
         except ValueError:
             self.result_label.config(text="0.00~1.00 사이 실수를 입력하세요", fg="orange")
 
     def reset_warning(self):
-        self.warning_counter = 0
-        self.warning_delay_active = False  # 🔥 딜레이도 리셋
-        self.result_label.config(text="경고 카운터가 초기화되었습니다", fg="blue")
+        self.warning_manager.reset()
+        self.warning_label.config(text="경고 카운터가 초기화되었습니다", fg="blue")
 
     def debounced_prediction(self, event, delay=100):
         if self.debounce_after_id:
@@ -140,44 +170,37 @@ class VoicePhishingApp:
         prediction, confidence, probs = predict(text, self.threshold)
         self.last_probs = probs
 
-        if prediction == 1:
-            if not self.warning_delay_active:
-                self.warning_counter += 1
-                self.warning_delay_active = True
-                self.root.after(5000, self.reset_warning_delay)  # 🔥 10초 후 경고 다시 가능
+        if self.warning_manager.should_warn(prediction):
+            self.root.after(5000, self.warning_manager.reset_delay)
 
-            if self.warning_counter >= 3:
-                result = f"누적 경고 {self.warning_counter}회! 보이스피싱 의심 (확률: {confidence * 100:.2f}%)"
-                color = "red"
-            else:
-                result = f"경고 {self.warning_counter}/3 (확률: {confidence * 100:.2f}%)"
-                color = "orange"
+        # 메시지 분리
+        result_msg, result_color = get_prediction_message(prediction, confidence)
+        self.result_label.config(text=result_msg, fg=result_color)
+
+        if self.warning_manager.counter > 0:
+            warn_msg = f"❗ 누적 경고 {self.warning_manager.counter}회!"
+            self.warning_label.config(text=warn_msg, fg="orange" if self.warning_manager.counter < 3 else "red")
         else:
-            result = f"정상 (확률: {confidence * 100:.2f}%)"
-            color = "green"
-
-        self.result_label.config(text=result, fg=color)
+            self.warning_label.config(text="")
 
         if self.log_enabled:
             print(f"[입력] {text}")
             print(f"[확률] {probs}")
-            print(f"[결과] {result}\n")
-
-    def reset_warning_delay(self):
-        self.warning_delay_active = False
+            print(f"[결과] {result_msg} / 경고: {self.warning_manager.counter}회\n")
 
     def plot_probs(self):
         if self.last_probs is None:
             self.result_label.config(text="먼저 예측을 수행하세요.")
             return
         plt.clf()
-        plt.bar(["일반 대화", "보이스피싱"], self.last_probs, color=["green", "red"])
+        class_names = ["일반 대화", "보이스피싱"] if num_classes == 2 else [f"클래스 {i}" for i in range(num_classes)]
+        plt.bar(class_names, self.last_probs, color=["green", "red"][:num_classes])
         plt.ylim([0, 1])
         plt.title("Softmax 확률")
         plt.ylabel("확률")
         plt.show()
 
-# === 메인 ===
+# === 실행 ===
 def main():
     root = tk.Tk()
     app = VoicePhishingApp(root)

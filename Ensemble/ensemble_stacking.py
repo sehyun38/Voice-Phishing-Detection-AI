@@ -3,20 +3,22 @@ import torch
 import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
+import torch.nn.functional as f
 
 from Train.voice_phishing_kluebert_v1 import pooling
-from config import VOCAB_SIZE, DEVICE, FILE_PATH, PT_SAVE_PATH, tokenizer, MAX_LENGTH
+from config import VOCAB_SIZE, DEVICE, FILE_PATH, PT_SAVE_PATH, tokenizer, MAX_LENGTH, num_classes
 from models import BiLSTMAttention, TextCNN, RCNN, KLUEBertModel
 from utils import VoicePhishingDataset
 
 # BERT 모델 포함 여부
-USE_BERT_MODEL = True
 USE_TOKEN_WEIGHTS = True
+# 앙상블 모델 BERT fine-tuning 모델 추가
+USE_BERT_MODEL = True
 
 #하이퍼 파라미터
 embed_size = 256
 hidden_dim = 128
-num_classes = 2
 
 # 모델 목록
 model_keys = ["bilstm", "textcnn", "rcnn"]
@@ -36,12 +38,12 @@ def generate_model_configs(folder_names):
     configs = {}
 
     for key in model_keys:
-        weight_path = f"../Result/{folder_names[key]}/model/best_model.pth"
+        weight_path = f"../Result/{folder_names[key]}/model"
 
         if key == "bilstm":
             configs[key] = {
                 "class": BiLSTMAttention,
-                "weight_path": weight_path,
+                "weight_path":os.path.join(weight_path,"best_model.pth"),
                 "init_args": {
                     "vocab_size": VOCAB_SIZE,
                     "embed_dim": embed_size,
@@ -52,7 +54,7 @@ def generate_model_configs(folder_names):
         elif key == "textcnn":
             configs[key] = {
                 "class": TextCNN,
-                "weight_path": weight_path,
+                "weight_path":os.path.join(weight_path,"best_model.pth"),
                 "init_args": {
                     "vocab_size": VOCAB_SIZE,
                     "embed_dim": embed_size,
@@ -62,7 +64,7 @@ def generate_model_configs(folder_names):
         elif key == "rcnn":
             configs[key] = {
                 "class": RCNN,
-                "weight_path": weight_path,
+                "weight_path": os.path.join(weight_path,"best_model.pth"),
                 "init_args": {
                     "vocab_size": VOCAB_SIZE,
                     "embed_dim": embed_size,
@@ -73,7 +75,7 @@ def generate_model_configs(folder_names):
         elif key == "bert":
             configs[key] = {
                 "class": KLUEBertModel,
-                "weight_path": weight_path,
+                "weight_path": os.path.join(weight_path,"best_model.pth"),
                 "init_args": {
                     "pooling": pooling,
                     "num_classes": num_classes
@@ -84,8 +86,22 @@ def generate_model_configs(folder_names):
 
 # 3. TorchScript 경로 (.pt)
 MODEL_PATHS_PT = {
-    key: f"../Result/{MODEL_FOLDER_NAMES[key]}/model/best_model.pt"
-    for key in model_keys
+    "bilstm": {
+        "class": BiLSTMAttention,
+        "weight_path": os.path.join("../Result", "BiLSTM_v2", "model","best_model.pt")
+    },
+    "textcnn": {
+        "class": TextCNN,
+        "weight_path": os.path.join("../Result", "TextCNN", "model", "best_model.pt")
+    },
+    "rcnn": {
+        "class": RCNN,
+        "weight_path": os.path.join("../Result", "RCNN", "model", "best_model.pt")
+    },
+    "bert": {
+        "class": KLUEBertModel,
+        "weight_path": os.path.join("../Result", "kluebert_v1", "model", "fold_1.pt")
+    }
 }
 
 model_structure_load = True
@@ -110,7 +126,7 @@ def load_all_models():
     # 전역에서 만든 MODEL_CONFIGS를 사용
     for key in model_keys:
         if model_structure_load:
-            model = load_scripted_model(MODEL_PATHS_PT[key])
+            model = load_scripted_model(MODEL_PATHS_PT[key]["weight_path"])
         else:
             config = model_configs[key]
             model = load_model_weights(
@@ -133,29 +149,39 @@ class MetaMLP(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, 8)
-        self.relu = nn.GELU()
         self.fc2 = nn.Linear(8, num_classes)
 
-    def forward(self, x):
-        return self.fc2(self.relu(self.fc1(x)))
-
+    def forward(self, x: torch.Tensor):
+        x = f.gelu(self.fc1(x))  # 여기서 바로 사용
+        return self.fc2(x)
 
 # 메타 피처 생성
 def get_meta_features(dataset):
     meta_inputs, labels = [], []
-    for sample in tqdm(dataset, desc="Generating meta features"):
+
+    # 모델들 한 번만 로드
+    models = load_all_models()
+
+    def predict_for_sample(sample):
         input_tensor = sample['input_ids'].unsqueeze(0).to(DEVICE)
         attention_mask = sample['attention_mask'].unsqueeze(0).to(DEVICE)
         label = sample['label']
 
-        # 각 모델에 대해 예측 결과를 받아옵니다.
-        models = load_all_models()
-        probs = [predict_model(model, input_tensor, attention_mask) for model in models]
+        # 모델 병렬 처리
+        with ThreadPoolExecutor() as executor:
+            probs = list(executor.map(
+                lambda model: predict_model(model, input_tensor, attention_mask), models
+            ))
+        # probs = predict_model(model, input_tensor , attention_mask)  # [[p0, p1], ...]
 
+        return probs, label.item()
+
+    for sample in tqdm(dataset, desc="Generating meta features (parallel)"):
+        probs, label = predict_for_sample(sample)
         meta_inputs.append(probs)
-        labels.append(label.item())
-    return np.array(meta_inputs), np.array(labels)
+        labels.append(label)
 
+    return np.array(meta_inputs), np.array(labels)
 
 # 메타 모델 학습 함수
 def train_meta_model_torch(train_dataset):
@@ -191,26 +217,21 @@ def train_meta_model_torch(train_dataset):
 
 # 메타 모델을 사용한 스태킹 예측
 def predict_stacking_torch(input_tensor, attention_mask, meta_model, threshold=0.6):
-    # 모델별 예측 확률을 가져옵니다.
     models = load_all_models()
     probs = [predict_model(model, input_tensor, attention_mask) for model in models]
     x = torch.tensor(probs, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-    # meta_model을 사용해 예측을 수행합니다.
     meta_model.eval()
     with torch.no_grad():
         logits = meta_model(x)
         softmax_probs = torch.softmax(logits, dim=1).squeeze(0)  # [num_classes]
 
-        # threshold 이상인 클래스가 있으면 그것으로 예측
         for i, p in enumerate(softmax_probs):
-            p: torch.Tensor  # <- 명시적으로 타입 힌트 추가
             if p.item() >= threshold:
-                return i, p.item()
+                return i, p.item(), softmax_probs.cpu().numpy()
 
-        # threshold를 넘지 않으면 argmax로 예측
         pred_class = torch.argmax(softmax_probs).item()
-        return pred_class, softmax_probs[pred_class].item()
+        return pred_class, softmax_probs[pred_class].item(), softmax_probs.cpu().numpy()
 
 # Main
 if __name__ == "__main__":
@@ -228,6 +249,6 @@ if __name__ == "__main__":
     attention_mask = dataset[0]['attention_mask'].unsqueeze(0).to(DEVICE)
 
     # predict_stacking_torch 호출 시 meta_model 전달
-    result_class, result_prob = predict_stacking_torch(input_tensor, attention_mask, meta_model)
+    result_class, result_prob, probs = predict_stacking_torch(input_tensor, attention_mask, meta_model)
     print(f"Predicted class: {result_class}, Probability: {result_prob}")
 

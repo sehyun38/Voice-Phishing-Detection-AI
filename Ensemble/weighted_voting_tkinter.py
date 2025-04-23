@@ -1,5 +1,5 @@
 import tkinter as tk
-from ensemble_soft_voting import predict_soft_voting
+from ensemble_weighted_voting import predict_weighted_voting, USE_BERT_MODEL
 from matplotlib import font_manager
 import matplotlib.pyplot as plt
 
@@ -7,6 +7,12 @@ import matplotlib.pyplot as plt
 font_path = "C:/Windows/Fonts/malgun.ttf"  # Windows 경우
 font_prop = font_manager.FontProperties(fname=font_path)
 plt.rcParams['font.family'] = font_prop.get_name()
+
+# 모델 신뢰성 가중치
+weights = [1.0, 1.0, 2.0]
+
+if USE_BERT_MODEL:
+    weights.append(0.1)
 
 # === 신뢰도 기반 메시지 생성 ===
 def get_prediction_message(prediction, confidence):
@@ -143,7 +149,7 @@ class SoftVotingApp:
             self.result_label.config(text="텍스트를 입력해주세요.", fg="orange")
             return
 
-        prediction, confidence, probs = predict_soft_voting(text, self.threshold)
+        prediction, confidence, probs = predict_weighted_voting( text, self.threshold, weights)
         self.last_probs = probs
 
         if self.warning_manager.should_warn(prediction):
@@ -154,7 +160,7 @@ class SoftVotingApp:
         self.result_label.config(text=result_msg, fg=result_color)
 
         if self.warning_manager.counter > 0:
-            warn_msg = f"❗ 누적 경고 {self.warning_manager.counter}회!"
+            warn_msg = f"누적 경고 {self.warning_manager.counter}회!"
             self.warning_label.config(text=warn_msg, fg="orange" if self.warning_manager.counter < 3 else "red")
         else:
             self.warning_label.config(text="")

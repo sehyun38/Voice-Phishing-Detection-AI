@@ -154,26 +154,35 @@ def predict_model(model, input_ids, attention_mask=None):
         return probs
 
 
-def predict_soft_voting(text, threshold=0.6):
-    """ Soft Voting 방식 예측 """
+def predict_weighted_voting(text, threshold=0.6, weights=None):
+    """ Weighted Soft Voting 방식 예측 """
     # 텍스트로부터 input_ids와 attention_mask 생성
     input_ids, attention_mask = encode_text(text)
 
-    # 모든 모델에 대해 예측 확률 계산
-    models = load_all_models()
+    # 모델 불러오기
+    models = load_all_models()  # 3개 모델 [RCNN, TextCNN, BiLSTM]
 
+    # 기본 가중치 설정 (동일 가중치면 Soft Voting과 동일)
+    if weights is None:
+        weights = [1.0] * len(models)
+
+    # 각 모델의 확률 예측
     with ThreadPoolExecutor() as executor:
         all_probs = list(executor.map(
             lambda model: predict_model(model, input_ids, attention_mask),
             models
         ))
-    # all_probs = [predict_model(model, input_ids, attention_mask) for model in models]  # [[p0, p1], ...]
+    # all_probs = [predict_model(model, input_ids , attention_mask) for model in models]  # [[p0, p1], ...]
 
-    # 확률의 평균을 구함
-    avg_probs = torch.tensor(all_probs).mean(dim=0).tolist()  # 평균 확률 [p0, p1]
+    # Weighted 평균 계산
+    weighted_sum = torch.tensor([0.0, 0.0])
+    total_weight = sum(weights)
+    for prob, w in zip(all_probs, weights):
+        weighted_sum += torch.tensor(prob) * w
+    avg_probs = (weighted_sum / total_weight).tolist()  # 가중 평균 확률 [p0, p1]
 
-    # threshold 적용 (class 1 확률이 threshold 이상이면 1, 아니면 0)
-    prediction = int(avg_probs[1] >= threshold)  # class 1 확률 기준 판단
+    # threshold 기반 클래스 결정
+    prediction = int(avg_probs[1] >= threshold)
     confidence = avg_probs[1]
 
     return prediction, confidence, avg_probs
