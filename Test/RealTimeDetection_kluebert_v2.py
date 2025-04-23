@@ -6,7 +6,10 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
 from config import DEVICE, tokenizer, VOCAB_SIZE, MAX_LENGTH, num_classes
-from models import BiLSTMAttention, TextCNN, RCNN, KLUEBertModel, CNNModelV2, CNNModelV3
+from models import (
+    CNNModelV2, CNNModelV3, BiLSTMAttention, TextCNN, RCNN, KLUEBertModel,
+    GRUAttention, FastTextClassifier,  LiteAttentionClassifier, DPCNN, KMaxCNN
+)
 
 font_path = "C:/Windows/Fonts/malgun.ttf"  # Windows 경우
 font_prop = font_manager.FontProperties(fname=font_path)
@@ -16,12 +19,13 @@ plt.rcParams['font.family'] = font_prop.get_name()
 embed_size = 256
 hidden_size = 128
 
-model_type = "BiLSTM_v2"
+model_type = "BiLSTM"
 pooling = "mha"
 model_structure_load = True  # True -> .pt, False -> .pth
 file_ext = ".pt" if model_structure_load else ".pth"
 
-AVAILABLE_MODELS = ["CNN_v2", "CNN_v3", "TextCNN", "BiLSTM_v2", "RCNN", "KLUEBERT"]
+AVAILABLE_MODELS = ["CNN_v2", "CNN_v3", "BiLSTM","TextCNN","RCNN","kluebert","DPCNN",
+                  "GRU","FastText","LiteAttention","KMaxCNN"]
 AVAILABLE_FOLDS = ["best_model", "fold_1", "fold_2", "fold_3", "fold_4", "fold_5"]
 
 def load_model(model_path):
@@ -38,7 +42,7 @@ def load_model(model_path):
                 model = CNNModelV3(VOCAB_SIZE, embed_size, num_classes)
             elif model_type == "TextCNN":
                 model = TextCNN(VOCAB_SIZE, embed_size, num_classes)
-            elif model_type == "BiLSTM_v2":
+            elif model_type == "BiLSTM":
                 model = BiLSTMAttention(VOCAB_SIZE, embed_size, hidden_size, num_classes)
             elif model_type == "RCNN":
                 model = RCNN(VOCAB_SIZE, embed_size, hidden_size, num_classes)
